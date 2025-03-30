@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 )
 
 // Store topic-to-subscriptions mappings
@@ -87,7 +86,7 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 	}
 
 	// Print form values for debugging
-	debugFormValues("WebSub subscription request received:", request.Form)
+	DebugFormValues("WebSub subscription request received:", request.Form)
 
 	// https://www.w3.org/TR/websub/#hubs
 	// A conforming hub:
@@ -143,30 +142,13 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 
 }
 
-// Print information about the hub
-// Useful when debugging to avoid "declared and not used" errors
-func (hub *Hub) PrintStats() {
-	fmt.Printf("WebSub Hub with %d topics\n", len(hub.subscriptions))
-}
-
-// Print form values for debugging
-func debugFormValues(prefix string, form url.Values) {
-	fmt.Println(prefix)
-	fmt.Println("-------------------------------------")
-	fmt.Println("All form values:\n")
-	for key, values := range form {
-		fmt.Printf("%s: %v\n", key, values)
-	}
-	fmt.Println("-------------------------------------")
-}
-
 func main() {
 
 	// Create a new WebSub hub
 	hub := NewHub()
 
 	// Now the hub is used
-	// hub.PrintStats()
+	hub.PrintStats()
 
 	// Set up the web server to use our SubscribeHandler function
 	http.HandleFunc("/", hub.SubscribeHandler)
