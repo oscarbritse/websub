@@ -93,14 +93,50 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 	// A conforming hub:
 	// 	* MUST accept a subscription request with the parameters hub.callback, hub.mode and hub.topic.
 	// 	* MUST accept a subscription request with a hub.secret parameter.
-	// 	* MAY respect the requested lease duration in subscription requests.
-	// callback := request.Form.Get("hub.callback")
-	// mode := request.Form.Get("hub.mode")
-	// topic := request.Form.Get("hub.topic")
+	// 	* MAY respect the requested lease duration in subscription requests. (not included from websub-client)
+	callback := request.Form.Get("hub.callback")
+	mode := request.Form.Get("hub.mode")
+	topic := request.Form.Get("hub.topic")
+	secret := request.Form.Get("hub.secret")
 
-	// // Extract optional fields
-	// secret := request.Form.Get("hub.secret")
-	// leaseSecondsStr := request.Form.Get("hub.lease_seconds")
+	// Add validation rules for the parameters
+	// OR (||), AND (&&), neither subscribe nor unsubscribe
+	// Check that we have all required parameters according to WebSub specification
+	if callback == "" || topic == "" || (mode != "subscribe" && mode != "unsubscribe") {
+		// Build a helpful error message
+		errorMsg := "WebSub subscription request error: "
+
+		// Check each required parameter
+		if callback == "" {
+			errorMsg += "Missing hub.callback parameter. "
+		}
+
+		if topic == "" {
+			errorMsg += "Missing hub.topic parameter. "
+		}
+
+		if mode == "" {
+			errorMsg += "Missing hub.mode parameter. "
+		} else if mode != "subscribe" && mode != "unsubscribe" {
+			errorMsg += fmt.Sprintf("Invalid hub.mode value: '%s'. Must be 'subscribe' or 'unsubscribe'. ", mode)
+		}
+
+		// Log the error for debugging
+		log.Println(errorMsg)
+
+		// Send error response to client
+		http.Error(writer, errorMsg, http.StatusBadRequest)
+		return
+	}
+
+	if mode == "subscribe" {
+		log.Printf("Subscription request for topic '%s' with callback '%s'", topic, callback)
+		if secret != "" {
+			log.Printf("Secret provided for subscription")
+		} else {
+			log.Printf("No secret provided for subscription")
+		}
+	}
 
 	// Tell the subscriber we got their request
 	writer.WriteHeader(http.StatusAccepted)
