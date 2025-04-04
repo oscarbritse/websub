@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 )
 
 // Store topic-to-subscriptions mappings
@@ -28,6 +30,7 @@ type Subscription struct {
 // Map is similar to a Python dict
 type Hub struct {
 	subscriptions map[string][]Subscription
+	mutex         sync.RWMutex // Protects the subscriptions map
 }
 
 //	subscriptions: {
@@ -75,18 +78,34 @@ func NewHub() *Hub {
 // Request is a struct that represents an HTTP request
 func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 
-	// Fail fast philosophy. return exits the function immediately, preventing further execution. Common Go pattern
+	// Fail fast philosophy. return exits the function immediately
 
-	// Only accept POST requests
+	// Log request details for debugging
+	log.Printf("Received subscription request from %s", request.RemoteAddr)
+
+	// Verify HTTP method is POST
 	if request.Method != "POST" {
-		http.Error(writer, "HTTP method is not allowed", http.StatusMethodNotAllowed)
+		errorMsg := "Method not allowed. WebSub requires HTTP POST."
+		log.Println(errorMsg)
+		http.Error(writer, errorMsg, http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Parse the form data from the request
+	// Verify Content-Type is application/x-www-form-urlencoded
+	contentType := request.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		errorMsg := "Invalid Content-Type. WebSub requires application/x-www-form-urlencoded."
+		log.Println(errorMsg)
+		http.Error(writer, errorMsg, http.StatusBadRequest)
+		return
+	}
+
+	// Parse form data (implicitly checks UTF-8 encoding)
 	err := request.ParseForm()
 	if err != nil {
-		http.Error(writer, "Failed to parse request form data", http.StatusBadRequest)
+		errorMsg := fmt.Sprintf("Failed to parse form data: %v. WebSub requires UTF-8 encoding.", err)
+		log.Println(errorMsg)
+		http.Error(writer, errorMsg, http.StatusBadRequest)
 		return
 	}
 
@@ -103,7 +122,7 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 	topic := request.Form.Get("hub.topic")
 	secret := request.Form.Get("hub.secret")
 
-	// Validate
+	// Validate form data
 	// OR (||), AND (&&), neither subscribe nor unsubscribe
 	// Check that we have all required parameters according to WebSub specification
 	if callback == "" || topic == "" || (mode != "subscribe" && mode != "unsubscribe") {
@@ -149,10 +168,12 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 		} else {
 			log.Printf("No secret provided for subscription")
 		}
+	} else if mode == "unsubscribe" {
+		log.Printf("Unsubscribe request for topic '%s' with callback '%s'", topic, callback)
 	}
 
 	// Verification
-	// Per WebSub spec, verification happens asynchronously after sending 202 response
+	// Verification happens asynchronously after sending 202 response
 	// 5.1.2 Subscription Response Details
 	// The hub SHOULD perform the verification and validation of intent as soon as possible.
 	go func() {
@@ -266,12 +287,16 @@ func topicExists(topic string) bool {
 
 // verifyIntent sends a verification request to the subscriber
 func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
+
 	// Build verification URL with query parameters
 	callbackURL, err := url.Parse(callback)
 	if err != nil {
 		log.Printf("Invalid callback URL: %s", err)
 		return false
 	}
+
+	log.Printf("Verifying intent: URL=%s, mode=%s, topic=%s, challenge=%s",
+		callbackURL.String(), mode, topic, challenge)
 
 	// Construct the callback query with parameters
 	callbackQuery := callbackURL.Query()
@@ -308,6 +333,10 @@ func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 
 // Add a subscription
 func (h *Hub) addSubscription(callback, topic, secret string) {
+	// Lock the mutex for writing since we'll modify the subscriptions map
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+
 	// Create new subscription
 	// Represents a single subscriber's intent to receive updates for a topic
 	sub := Subscription{
@@ -354,6 +383,9 @@ func (h *Hub) addSubscription(callback, topic, secret string) {
 
 // Remove an existing subscription from the hub.
 func (h *Hub) removeSubscription(callback, topic string) {
+	// Lock the mutex for writing since we'll modify the subscriptions map
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 
 	// Check if the topic exists in our subscriptions map
 	subs, exists := h.subscriptions[topic]
