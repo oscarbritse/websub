@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 )
 
 // Store topic-to-subscriptions mappings
@@ -58,7 +63,7 @@ func NewHub() *Hub {
 	return &hub
 }
 
-// SubscribeHandler handles WebSub subscription requests (Subscriber -> Hub)
+// Subscribe handles WebSub subscription requests (Subscriber -> Hub)
 // Subscriber makes a POST to the hub to subscribe to updates about topic
 //
 // A function which takes a "receiver" (argument before func name) is called a method in Go
@@ -68,7 +73,7 @@ func NewHub() *Hub {
 // ResponseWriter is an interface that allows you to write HTTP responses
 // (modify in-place rather than return-based approach)
 // Request is a struct that represents an HTTP request
-func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Request) {
+func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 
 	// Fail fast philosophy. return exits the function immediately, preventing further execution. Common Go pattern
 
@@ -86,7 +91,7 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 	}
 
 	// Print form values for debugging
-	DebugFormValues("WebSub subscription request received:", request.Form)
+	// DebugFormValues("WebSub subscription request received:", request.Form)
 
 	// https://www.w3.org/TR/websub/#hubs
 	// A conforming hub:
@@ -98,7 +103,7 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 	topic := request.Form.Get("hub.topic")
 	secret := request.Form.Get("hub.secret")
 
-	// Add validation rules for the parameters
+	// Validate
 	// OR (||), AND (&&), neither subscribe nor unsubscribe
 	// Check that we have all required parameters according to WebSub specification
 	if callback == "" || topic == "" || (mode != "subscribe" && mode != "unsubscribe") {
@@ -128,6 +133,15 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 
+	// Send 202 Accepted respons
+	// 5.1.2 Subscription Response Details
+	// If the hub URL supports WebSub and is able to handle the subscription or unsubscription request,
+	// it MUST respond to a subscription request with an HTTP [RFC7231] 202 "Accepted" response to
+	// indicate that the request was received and will now be verified (Section 4.3 ) and validated
+	// (Section 4.2 ) by the hub
+	writer.WriteHeader(http.StatusAccepted)
+
+	// Used for debugging
 	if mode == "subscribe" {
 		log.Printf("Subscription request for topic '%s' with callback '%s'", topic, callback)
 		if secret != "" {
@@ -137,9 +151,156 @@ func (hub *Hub) SubscribeHandler(writer http.ResponseWriter, request *http.Reque
 		}
 	}
 
-	// Tell the subscriber we got their request
-	writer.WriteHeader(http.StatusAccepted)
+	// Verification
+	// Per WebSub spec, verification happens asynchronously after sending 202 response
+	// 5.1.2 Subscription Response Details
+	// The hub SHOULD perform the verification and validation of intent as soon as possible.
+	go func() {
 
+		// Validation logic - example checks that could lead to denial:
+		//Topic doesn't exist
+		if !topicExists(topic) {
+			hub.denySubscription(callback, topic, "Topic does not exist")
+			return
+		}
+
+		// 8.2 Subscriptions
+		// When performing intent verification, the hub SHOULD use a random, single-use hub.challenge.
+		// Generate a random challenge string
+		challenge := generateChallenge()
+
+		// Verify intent by sending a GET request to the callback URL
+		// Confirms the subscription request came from someone who controls the callback URL
+		// Prevents attackers from subscribing someone else's URL to a topic
+		intentVerified := hub.verifyIntent(callback, mode, topic, challenge)
+
+		// Process verification result internally (don't send another HTTP response)
+		if intentVerified {
+			// Add or remove the subscription based on mode
+			if mode == "subscribe" {
+				// Add subscription
+				log.Printf("Verified and added subscription: %s for topic: %s", callback, topic)
+			} else {
+				// Remove subscription
+				log.Printf("Verified and removed subscription: %s for topic: %s", callback, topic)
+			}
+		} else {
+			log.Printf("Failed to verify intent for %s request: %s, topic: %s",
+				mode, callback, topic)
+		}
+	}()
+
+}
+
+// Create a random string for subscriber intent verification
+// 16 bytes = 128 bits of randomness (strong security)
+// crypto/rand package (cryptographically secure)
+// results in a 32-character string
+func generateChallenge() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// denySubscription sends a denial notification to the subscriber
+//
+// 5.2 Subscription Validation
+// If (and when) the subscription is denied, the hub MUST inform the subscriber
+// by sending an HTTP [RFC7231] (or HTTPS [RFC2818]) GET request to the subscriber's
+// callback URL as given in the subscription request.
+func (hub *Hub) denySubscription(callback, topic, reason string) {
+	// Build denial URL with query parameters
+	callbackURL, err := url.Parse(callback)
+	if err != nil {
+		log.Printf("Invalid callback URL for denial: %s", err)
+		return
+	}
+
+	// Construct the callback query with denial parameters
+	callbackQuery := callbackURL.Query()
+	callbackQuery.Add("hub.mode", "denied")
+	callbackQuery.Add("hub.topic", topic)
+	if reason != "" {
+		callbackQuery.Add("hub.reason", reason)
+	}
+	callbackURL.RawQuery = callbackQuery.Encode()
+
+	// Send GET request to notify subscriber of denial
+	resp, err := http.Get(callbackURL.String())
+	if err != nil {
+		log.Printf("Failed to send denial notification: %s", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Sent subscription denial for topic '%s' to '%s'. Reason: %s",
+		topic, callback, reason)
+}
+
+// topicExists checks if a topic is valid
+func topicExists(topic string) bool {
+	// Predefined list of valid topics
+	validTopics := []string{
+		"/a/topic", // the topic we are interested in
+		"/another/topic",
+		"/yet/another/topic",
+	}
+
+	// Check against the valid topics
+	for _, validTopic := range validTopics {
+		if topic == validTopic {
+			return true
+		}
+	}
+
+	// Log what topic was requested vs what's available
+	log.Printf("Topic validation failed: requested '%s', valid topics are: %v",
+		topic, validTopics)
+
+	// Topic does not exist
+	return false
+}
+
+// verifyIntent sends a verification request to the subscriber
+func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
+	// Build verification URL with query parameters
+	callbackURL, err := url.Parse(callback)
+	if err != nil {
+		log.Printf("Invalid callback URL: %s", err)
+		return false
+	}
+
+	// Construct the callback query with parameters
+	callbackQuery := callbackURL.Query()
+	callbackQuery.Add("hub.mode", mode)
+	callbackQuery.Add("hub.topic", topic)
+	callbackQuery.Add("hub.challenge", challenge)
+	callbackURL.RawQuery = callbackQuery.Encode()
+
+	// Send GET request to callback URL of subscriber (Hub -> Subscriber)
+	// Hub verifies the subscription attempt with a GET
+	resp, err := http.Get(callbackURL.String())
+	if err != nil {
+		log.Printf("Failed to verify intent: %s", err)
+		return false
+	}
+	// Cleanup happens when function returns regardless of how it finishes
+	// A bit like finally() in Python
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read verification response: %s", err)
+		return false
+	}
+
+	// Verify HTTP 200 response and body matches challenge
+	// Verify that the subscriber's response has an HTTP 200 OK status code
+	// Remove any whitespace. Convert the byte array to a string
+	// Compares the trimmed response body exactly with our original challenge string
+	// Confirms the subscriber can both receive and respond correctly on that URL
+	return resp.StatusCode == http.StatusOK && string(bytes.TrimSpace(body)) == challenge
 }
 
 func main() {
@@ -150,8 +311,8 @@ func main() {
 	// Now the hub is used
 	hub.PrintStats()
 
-	// Set up the web server to use our SubscribeHandler function
-	http.HandleFunc("/", hub.SubscribeHandler)
+	// Set up the web server to use our Subscribe function
+	http.HandleFunc("/", hub.Subscribe)
 
 	// Start the server on port 8080
 	log.Println("WebSub Hub starting on port: 8080")
