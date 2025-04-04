@@ -179,6 +179,7 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 			// Add or remove the subscription based on mode
 			if mode == "subscribe" {
 				// Add subscription
+				hub.addSubscription(callback, topic, secret)
 				log.Printf("Verified and added subscription: %s for topic: %s", callback, topic)
 			} else {
 				// Remove subscription
@@ -231,6 +232,8 @@ func (hub *Hub) denySubscription(callback, topic, reason string) {
 		log.Printf("Failed to send denial notification: %s", err)
 		return
 	}
+	// Cleanup happens when function returns regardless of how it finishes
+	// A bit like finally() in Python
 	defer resp.Body.Close()
 
 	log.Printf("Sent subscription denial for topic '%s' to '%s'. Reason: %s",
@@ -301,6 +304,52 @@ func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 	// Compares the trimmed response body exactly with our original challenge string
 	// Confirms the subscriber can both receive and respond correctly on that URL
 	return resp.StatusCode == http.StatusOK && string(bytes.TrimSpace(body)) == challenge
+}
+
+// Add a subscription
+func (h *Hub) addSubscription(callback, topic, secret string) {
+	// Create new subscription
+	// Represents a single subscriber's intent to receive updates for a topic
+	sub := Subscription{
+		Callback: callback,
+		Topic:    topic,
+		Secret:   secret,
+	}
+
+	// Check if we already have any subscriptions for this topic
+	//
+	// Check if the value exists in a map: value, ok := someMap[key]
+	subs, exists := h.subscriptions[topic]
+	// If this is the first subscription for this topic
+	if !exists {
+		// Create a new slice containing just this subscription
+		// and add it to the subscriptions map under this topic
+		h.subscriptions[topic] = []Subscription{sub}
+		return
+	}
+
+	// If we already have subscriptions for this topic,
+	// check if this exact subscriber (callback URL) is already subscribed
+	for i, existingSub := range subs {
+		// If we find a matching callback, this is a subscription update
+		if existingSub.Callback == callback {
+			// Replace the existing subscription with the new one
+			// 5.1 Subscriber Sends Subscription Request
+			//
+			//Hubs MUST allow subscribers to re-request subscriptions that are
+			// already activated. Each subsequent request to a hub to subscribe
+			// or unsubscribe MUST override the previous subscription state for
+			// a specific topic URL and callback URL combination,
+			subs[i] = sub
+			h.subscriptions[topic] = subs
+			return
+		}
+	}
+
+	// If this is a new subscriber for an existing topic
+	// (we didn't find a matching callback above)
+	// Add this subscription to the end of the slice for this topic
+	h.subscriptions[topic] = append(subs, sub)
 }
 
 func main() {
