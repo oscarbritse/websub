@@ -31,15 +31,6 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	// Verify Content-Type is application/x-www-form-urlencoded
-	// contentType := request.Header.Get("Content-Type")
-	// if !strings.Contains(contentType, "application/x-www-form-urlencoded") {
-	//	errorMsg := "Invalid Content-Type. WebSub requires application/x-www-form-urlencoded."
-	//	log.Println(errorMsg)
-	//	http.Error(writer, errorMsg, http.StatusBadRequest)
-	//	return
-	//}
-
 	// Parse form data (implicitly checks UTF-8 encoding)
 	err := request.ParseForm()
 	if err != nil {
@@ -113,13 +104,6 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 	// The hub SHOULD perform the verification and validation of intent as soon as possible.
 	go func() {
 
-		// Validation logic - example checks that could lead to denial:
-		//Topic doesn't exist
-		if !topicExists(topic) {
-			hub.denySubscription(callback, topic, "Topic does not exist")
-			return
-		}
-
 		// 8.2 Subscriptions
 		// When performing intent verification, the hub SHOULD use a random, single-use hub.challenge.
 		// Generate a random challenge string
@@ -130,20 +114,19 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 		// Prevents attackers from subscribing someone else's URL to a topic
 		intentVerified := hub.verifyIntent(callback, mode, topic, challenge)
 
-		// Process verification result internally (don't send another HTTP response)
-		if intentVerified {
-			// Add or remove the subscription based on mode
-			if mode == "subscribe" {
-				// Add subscription
-				hub.addSubscription(callback, topic, secret)
-				log.Printf("Verified and subscribed. Topic: %s, Callback: %s", topic, callback)
-			} else {
-				hub.removeSubscription(callback, topic)
-				log.Printf("Verified and unsubscribed. Topic: %s, Callback: %s", topic, callback)
-			}
-		} else {
+		if !intentVerified {
 			log.Printf("Failed to verify intent for %s request. Topic: %s, Callback: %s",
 				mode, topic, callback)
+			return
+		}
+
+		// Process based on verified intent
+		if mode == "subscribe" {
+			hub.addSubscription(callback, topic, secret)
+			log.Printf("Verified and subscribed. Topic: %s, Callback: %s", topic, callback)
+		} else {
+			hub.removeSubscription(callback, topic)
+			log.Printf("Verified and unsubscribed. Topic: %s, Callback: %s", topic, callback)
 		}
 	}()
 
@@ -201,11 +184,11 @@ func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 	//	callbackURL.String(), mode, topic, challenge)
 
 	// Construct the callback query with parameters
-	callbackQuery := callbackURL.Query()
-	callbackQuery.Add("hub.mode", mode)
-	callbackQuery.Add("hub.topic", topic)
-	callbackQuery.Add("hub.challenge", challenge)
-	callbackURL.RawQuery = callbackQuery.Encode()
+	q := callbackURL.Query()
+	q.Set("hub.mode", mode)
+	q.Set("hub.topic", topic)
+	q.Set("hub.challenge", challenge)
+	callbackURL.RawQuery = q.Encode()
 
 	// Send GET request to callback URL of subscriber (Hub -> Subscriber)
 	// Hub verifies the subscription attempt with a GET
@@ -234,30 +217,27 @@ func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 }
 
 // Add a subscription
-func (h *Hub) addSubscription(callback, topic, secret string) {
+func (hub *Hub) addSubscription(callback, topic, secret string) {
 	// Lock the mutex for writing since we'll modify the subscriptions map
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+	hub.mutex.Lock()
+
+	// Check if topic exists in our subscriptions map
+	if !topicExists(topic) {
+		hub.mutex.Unlock() // Release lock before making external HTTP call
+		hub.denySubscription(callback, topic, "Topic does not exist")
+		return
+	}
+	defer hub.mutex.Unlock()
 
 	// Create new subscription
-	// Represents a single subscriber's intent to receive updates for a topic
 	sub := Subscription{
 		Callback: callback,
 		Topic:    topic,
 		Secret:   secret,
 	}
 
-	// Check if we already have any subscriptions for this topic
-	//
-	// Check if the value exists in a map: value, ok := someMap[key]
-	subs, exists := h.subscriptions[topic]
-	// If this is the first subscription for this topic
-	if !exists {
-		// Create a new slice containing just this subscription
-		// and add it to the subscriptions map under this topic
-		h.subscriptions[topic] = []Subscription{sub}
-		return
-	}
+	// Get or initialize the slice of subscriptions for this topic
+	subs := hub.subscriptions[topic]
 
 	// If we already have subscriptions for this topic,
 	// check if this exact subscriber (callback URL) is already subscribed
@@ -272,7 +252,7 @@ func (h *Hub) addSubscription(callback, topic, secret string) {
 			// or unsubscribe MUST override the previous subscription state for
 			// a specific topic URL and callback URL combination,
 			subs[i] = sub
-			h.subscriptions[topic] = subs
+			hub.subscriptions[topic] = subs
 			return
 		}
 	}
@@ -280,19 +260,18 @@ func (h *Hub) addSubscription(callback, topic, secret string) {
 	// If this is a new subscriber for an existing topic
 	// (we didn't find a matching callback above)
 	// Add this subscription to the end of the slice for this topic
-	h.subscriptions[topic] = append(subs, sub)
+	hub.subscriptions[topic] = append(subs, sub)
 }
 
 // Remove an existing subscription from the hub.
-func (h *Hub) removeSubscription(callback, topic string) {
+func (hub *Hub) removeSubscription(callback, topic string) {
 	// Lock the mutex for writing since we'll modify the subscriptions map
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+	hub.mutex.Lock()
+	defer hub.mutex.Unlock()
 
 	// Check if the topic exists in our subscriptions map
-	subs, exists := h.subscriptions[topic]
-
 	// If the topic doesn't exist, there's nothing to remove, so exit early
+	subs, exists := hub.subscriptions[topic]
 	if !exists {
 		return
 	}
@@ -315,7 +294,7 @@ func (h *Hub) removeSubscription(callback, topic string) {
 	// Update the topic's subscription list with our filtered version
 	// This replaces the original slice with one that doesn't contain the removed subscription
 	// Note: even if the list is empty, we keep the topic in the subscriptions map
-	h.subscriptions[topic] = updatedSubs
+	hub.subscriptions[topic] = updatedSubs
 
 	// Log that we've removed the subscription
 	log.Printf("Removed subscription for callback '%s' from topic '%s'. Remaining subscriptions: %d",
