@@ -182,7 +182,7 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 				hub.addSubscription(callback, topic, secret)
 				log.Printf("Verified and added subscription: %s for topic: %s", callback, topic)
 			} else {
-				// Remove subscription
+				hub.removeSubscription(callback, topic)
 				log.Printf("Verified and removed subscription: %s for topic: %s", callback, topic)
 			}
 		} else {
@@ -336,7 +336,7 @@ func (h *Hub) addSubscription(callback, topic, secret string) {
 			// Replace the existing subscription with the new one
 			// 5.1 Subscriber Sends Subscription Request
 			//
-			//Hubs MUST allow subscribers to re-request subscriptions that are
+			// Hubs MUST allow subscribers to re-request subscriptions that are
 			// already activated. Each subsequent request to a hub to subscribe
 			// or unsubscribe MUST override the previous subscription state for
 			// a specific topic URL and callback URL combination,
@@ -350,6 +350,42 @@ func (h *Hub) addSubscription(callback, topic, secret string) {
 	// (we didn't find a matching callback above)
 	// Add this subscription to the end of the slice for this topic
 	h.subscriptions[topic] = append(subs, sub)
+}
+
+// Remove an existing subscription from the hub.
+func (h *Hub) removeSubscription(callback, topic string) {
+
+	// Check if the topic exists in our subscriptions map
+	subs, exists := h.subscriptions[topic]
+
+	// If the topic doesn't exist, there's nothing to remove, so exit early
+	if !exists {
+		return
+	}
+
+	// Create a new slice to hold all subscriptions except the one we're removing
+	// Common pattern to filter slice elements in Go
+	var updatedSubs []Subscription
+
+	// Iterate through all existing subscriptions for this topic
+	for _, sub := range subs {
+		// Check if the sub callback matches the one we want to remove
+		if sub.Callback != callback {
+			// If it doesn't match, keep it by adding it to our filtered slice
+			updatedSubs = append(updatedSubs, sub)
+		}
+		// Note: subscriptions with matching callbacks are simply not added
+		// to the new slice (and thus removed)
+	}
+
+	// Update the topic's subscription list with our filtered version
+	// This replaces the original slice with one that doesn't contain the removed subscription
+	// Note: even if the list is empty, we keep the topic in the subscriptions map
+	h.subscriptions[topic] = updatedSubs
+
+	// Log that we've removed the subscription
+	log.Printf("Removed subscription for callback '%s' from topic '%s'. Remaining subscriptions: %d",
+		callback, topic, len(updatedSubs))
 }
 
 func main() {
