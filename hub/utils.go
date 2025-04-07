@@ -10,7 +10,7 @@ import (
 	"net/url"
 )
 
-// topicExists checks if a topic is valid
+// Check if a topic is valid
 func topicExists(topic string) bool {
 	// Predefined list of valid topics
 	validTopics := []string{
@@ -60,7 +60,7 @@ func generateSignature(content []byte, secret string) string {
 func DebugFormValues(prefix string, form url.Values) {
 	fmt.Println(prefix)
 	fmt.Println("-------------------------------------")
-	fmt.Println("All form values:\n")
+	fmt.Println("All form values:")
 	for key, values := range form {
 		fmt.Printf("%s: %v\n", key, values)
 	}

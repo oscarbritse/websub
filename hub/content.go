@@ -11,82 +11,77 @@ import (
 	"time"
 )
 
-// Publish JSON data to a topic, and distributes it to all subscribers
-func (h *Hub) PublishContent(w http.ResponseWriter, r *http.Request) {
+// Define a struct for the expected request format
+type publishRequest struct {
+	Topic   string          `json:"topic"`
+	Content json.RawMessage `json:"content,omitempty"`
+}
+
+// Publish JSON data to a topic and distributes it to all subscribers
+func (h *Hub) PublishContent(writer http.ResponseWriter, request *http.Request) {
 	// Verify HTTP POST method
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if request.Method != "POST" {
+		http.Error(writer, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Verify Content-Type is application/json
-	if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
-		http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+	if !strings.Contains(request.Header.Get("Content-Type"), "application/json") {
+		http.Error(writer, "Content-Type must be application/json", http.StatusBadRequest)
 		return
 	}
 
 	// Read the request body
-	content, err := io.ReadAll(r.Body)
+	content, err := io.ReadAll(request.Body)
 	if err != nil {
-		http.Error(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(writer, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Validate that content is valid JSON
-	var jsonData map[string]interface{}
+	// Validate that content is valid JSON and extract required fields
+	var jsonData publishRequest
 	if err = json.Unmarshal(content, &jsonData); err != nil {
-		http.Error(w, "Invalid JSON content: "+err.Error(), http.StatusBadRequest)
+		http.Error(writer, "Invalid JSON content: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Extract topic from JSON data
-	topicValue, ok := jsonData["topic"]
-	if !ok {
-		http.Error(w, "JSON must contain 'topic' field", http.StatusBadRequest)
+	// Check if topic is provided and not empty
+	if jsonData.Topic == "" {
+		http.Error(writer, "JSON must contain non-empty 'topic' field", http.StatusBadRequest)
 		return
 	}
 
-	// Convert topic to string
-	topic, ok := topicValue.(string)
-	if !ok || topic == "" {
-		http.Error(w, "'topic' must be a non-empty string", http.StatusBadRequest)
-		return
-	}
+	// Use the topic directly from the struct
+	topic := jsonData.Topic
 
 	// Check if the topic exists
 	if !topicExists(topic) {
-		http.Error(w, "Topic does not exist", http.StatusNotFound)
+		http.Error(writer, "Topic does not exist", http.StatusNotFound)
 		log.Printf("Publish rejected: Topic '%s' does not exist", topic)
 		return
 	}
 
-	// Only distribute the "content" field provided
-	//
-	contentValue, ok := jsonData["content"]
-	if ok {
-		// Convert contentValue back to JSON
-		contentBytes, err := json.Marshal(contentValue)
-		if err != nil {
-			http.Error(w, "Failed to process content field", http.StatusBadRequest)
-			return
-		}
-		content = contentBytes
+	// Determine what content to distribute
+	contentToDistribute := content // Default to the entire request
+	if len(jsonData.Content) > 0 {
+		// If content field is provided, use only that
+		contentToDistribute = jsonData.Content
 	}
 
 	// Log for debugging
-	log.Printf("Received JSON content from publish endpoint. Topic: %s, Data: %s", topic, content)
+	log.Printf("Received JSON content from /publish endpoint. Topic: %s, Data: %s", topic, contentToDistribute)
 
 	// Distribute JSON content to subscribers asynchronously
-	go h.distributeContent(topic, content, "application/json")
+	go h.distributeContent(topic, contentToDistribute, "application/json")
 
 	// Return success response
-	w.WriteHeader(http.StatusAccepted)
+	writer.WriteHeader(http.StatusAccepted)
 
 	// Log for debugging
-	log.Printf("Accepted JSON content from publish endpoint. Will distribute via topic: %s", topic)
+	log.Printf("Accepted JSON content from /publish endpoint. Will distribute via topic: %s", topic)
 }
 
-// distributeContent sends content to all topic subscribers
+// Send content to all topic subscribers
 func (h *Hub) distributeContent(topic string, content []byte, contentType string) {
 	// Use a read lock to safely access the subscriptions map without blocking
 	// other goroutines also reading from it. This allows multiple
@@ -115,9 +110,9 @@ func (h *Hub) distributeContent(topic string, content []byte, contentType string
 	}
 }
 
-// deliverContentToSubscriber sends content to an individual subscriber
-// This function handles the actual HTTP request creation, signing, and delivery
-// It's designed to run in its own goroutine to allow concurrent delivery
+// Sends content to an individual subscriber
+// Handles the actual HTTP request creation, signing, and delivery
+// Designed to run in its own goroutine to allow concurrent delivery
 func deliverContentToSubscriber(sub Subscription, topic string, content []byte, contentType string) {
 	// Set up a HTTP POST request to the subscriber's callback URL
 	// including the content in the request body
@@ -167,7 +162,7 @@ func deliverContentToSubscriber(sub Subscription, topic string, content []byte, 
 	// Ensure connection is always closed even if an error occurs later
 	defer resp.Body.Close()
 
-	// Log delivery result for monitoring and debugging purposes
+	// Log delivery result for debugging
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		log.Printf("Successfully delivered content. Callback: %s, Status: %d",
 			sub.Callback, resp.StatusCode)

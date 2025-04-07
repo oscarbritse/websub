@@ -169,7 +169,7 @@ func (hub *Hub) denySubscription(callback, topic, reason string) {
 		topic, callback, reason)
 }
 
-// verifyIntent sends a verification request to the subscriber
+// Send a verification request to the subscriber and verify the response
 func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 
 	// Build verification URL with query parameters
@@ -216,7 +216,7 @@ func (hub *Hub) verifyIntent(callback, mode, topic, challenge string) bool {
 	return resp.StatusCode == http.StatusOK && string(bytes.TrimSpace(body)) == challenge
 }
 
-// Add a subscription
+// Add a subscription to a topic
 func (hub *Hub) addSubscription(callback, topic, secret string) {
 	// Lock the mutex for writing since we'll modify the subscriptions map
 	hub.mutex.Lock()
@@ -227,6 +227,7 @@ func (hub *Hub) addSubscription(callback, topic, secret string) {
 		hub.denySubscription(callback, topic, "Topic does not exist")
 		return
 	}
+	// Cleanup
 	defer hub.mutex.Unlock()
 
 	// Create new subscription
@@ -263,7 +264,7 @@ func (hub *Hub) addSubscription(callback, topic, secret string) {
 	hub.subscriptions[topic] = append(subs, sub)
 }
 
-// Remove an existing subscription from the hub.
+// Remove an existing subscription from a topic
 func (hub *Hub) removeSubscription(callback, topic string) {
 	// Lock the mutex for writing since we'll modify the subscriptions map
 	hub.mutex.Lock()
@@ -296,7 +297,7 @@ func (hub *Hub) removeSubscription(callback, topic string) {
 	// Note: even if the list is empty, we keep the topic in the subscriptions map
 	hub.subscriptions[topic] = updatedSubs
 
-	// Log that we've removed the subscription
+	// Log that we've removed the subscription from the topic
 	log.Printf("Removed subscription for callback '%s' from topic '%s'. Remaining subscriptions: %d",
 		callback, topic, len(updatedSubs))
 }
