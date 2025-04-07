@@ -18,7 +18,7 @@ type publishRequest struct {
 }
 
 // Publish JSON data to a topic and distributes it to all subscribers
-func (h *Hub) PublishContent(writer http.ResponseWriter, request *http.Request) {
+func (hub *Hub) PublishContent(writer http.ResponseWriter, request *http.Request) {
 	// Verify HTTP POST method
 	if request.Method != "POST" {
 		http.Error(writer, "Method not allowed", http.StatusMethodNotAllowed)
@@ -72,7 +72,7 @@ func (h *Hub) PublishContent(writer http.ResponseWriter, request *http.Request) 
 	log.Printf("Received JSON content from /publish endpoint. Topic: %s, Data: %s", topic, contentToDistribute)
 
 	// Distribute JSON content to subscribers asynchronously
-	go h.distributeContent(topic, contentToDistribute, "application/json")
+	go hub.distributeContent(topic, contentToDistribute, "application/json")
 
 	// Return success response
 	writer.WriteHeader(http.StatusAccepted)
@@ -82,24 +82,25 @@ func (h *Hub) PublishContent(writer http.ResponseWriter, request *http.Request) 
 }
 
 // Send content to all topic subscribers
-func (h *Hub) distributeContent(topic string, content []byte, contentType string) {
+func (hub *Hub) distributeContent(topic string, content []byte, contentType string) {
 	// Use a read lock to safely access the subscriptions map without blocking
 	// other goroutines also reading from it. This allows multiple
 	// distribution operations to happen concurrently.
-	h.mutex.RLock()
-	subs, exists := h.subscriptions[topic]
+	hub.mutex.RLock()
+	subs, exists := hub.subscriptions[topic]
 	if !exists {
-		h.mutex.RUnlock()
+		hub.mutex.RUnlock()
 		log.Printf("No subscribers for topic: %s", topic)
 		return
 	}
 
+	// Copy data to avoid race conditions
 	// Creating a copy allows us to release the lock quickly while still having
 	// access to all subscribers. This prevents holding the lock during the potentially
 	// slow network operations that follow.
 	subscriptionsCopy := make([]Subscription, len(subs))
 	copy(subscriptionsCopy, subs)
-	h.mutex.RUnlock()
+	hub.mutex.RUnlock()
 
 	log.Printf("Distributing content to %d subscriber(s) via topic: %s", len(subscriptionsCopy), topic)
 

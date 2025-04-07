@@ -41,7 +41,7 @@ func (hub *Hub) Subscribe(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	// Print form values for debugging
-	// DebugFormValues("WebSub subscription request received:", request.Form)
+	// debugFormValues("WebSub subscription request received:", request.Form)
 
 	// https://www.w3.org/TR/websub/#hubs
 	// A conforming hub:

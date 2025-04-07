@@ -57,7 +57,7 @@ func generateSignature(content []byte, secret string) string {
 }
 
 // Print form values for debugging
-func DebugFormValues(prefix string, form url.Values) {
+func debugFormValues(prefix string, form url.Values) {
 	fmt.Println(prefix)
 	fmt.Println("-------------------------------------")
 	fmt.Println("All form values:")
