@@ -89,6 +89,8 @@ func (hub *Hub) distributeContent(topic string, content []byte, contentType stri
 	hub.mutex.RLock()
 	subs, exists := hub.subscriptions[topic]
 	if !exists {
+		// If no subscribers exist for this topic, release the read lock immediately
+		// and exit the function early to avoid unnecessary processing.
 		hub.mutex.RUnlock()
 		log.Printf("No subscribers for topic: %s", topic)
 		return
